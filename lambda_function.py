@@ -52,6 +52,7 @@ def lambda_handler(event, context):
             column_names_list.append(col_name[0])                        #converts tubple names in list of names
             column_type_list.append(FieldType.get_info(col_name[1]))     #type of variable
 
+        file_id_index = column_names_list.index('file_id')
         file_name_index = column_names_list.index('file_name')
         file_location_index = column_names_list.index('file_location')
         
@@ -59,6 +60,7 @@ def lambda_handler(event, context):
             current_row = list(row_data)                                        #Current row function is interating on
             full_bucket_name = current_row[file_location_index]
             zip_file_name = current_row[file_name_index]
+            org_file_id = current_row[file_id_index]
             name_parts_list = full_bucket_name.split("/")
             if len(name_parts_list) == 4:
                 folder_name = name_parts_list[0]
@@ -157,9 +159,11 @@ def lambda_handler(event, context):
                         processing_table = sql_connect.execute(query_auto) 
  ############################################################################################################################33
  ## after contents have been written to mysql, write name of file to file-processing table to show it was done
-                    query_auto = ("INSERT INTO " + pre_valid_db + ".`table-seronet-file-processor` "
-                    "(user_id, file_name,file_location,file_status,file_date)"
-                    "VALUE ('"  + user_name + "','" + filename + "','" + full_bucket_name + "','Unzipped',CONVERT_TZ(CURRENT_TIMESTAMP(), '+00:00', '-05:00'))")
+                    output_file_name = 's3://' + folder_name + '/' + new_key 
+                  
+                    query_auto = ("INSERT INTO " + file_dbname + ".`table_file_validator` "
+                    "(orig_file_id, validation_file_location,validation_status,validation_result_location, validation_date,)"
+                    "VALUE ('" + org_file_id ',' + output_file_name  + ',Unzipped_Success' + ',Result_location_location' + "',CONVERT_TZ(CURRENT_TIMESTAMP(), '+00:00', '-05:00'))")
                     processing_table = sql_connect.execute(query_auto)      #mysql command that will update the file-processor table 
                     
                     if processing_table > 0:
