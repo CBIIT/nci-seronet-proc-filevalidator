@@ -28,11 +28,10 @@ def lambda_handler(event, context):
 
     sql_connect = conn.cursor()
 
-    table_sql_str = ("SELECT * FROM " + file_dbname + ".table_file_remover "
-    " Where file_status = 'COPY_SUCCESSFUL'")
+    table_sql_str = ("SELECT * FROM `" + file_dbname + "`.table_file_remover Where file_status = 'COPY_SUCCESSFUL'")
+
     processing_table = sql_connect.execute(table_sql_str)            #returns number of rows in the database
   
-    print("## there are " + str(processing_table) + " rows found in the table")
     rows = []
     if processing_table == 0:
         print('## There are no new files to add ##')
@@ -45,7 +44,8 @@ def lambda_handler(event, context):
         print('SQL command was executed sucessfully')
         rows = sql_connect.fetchall()                   #list of all the data
         desc = sql_connect.description                  #tuple list of column names
-
+        
+    
         column_names_list = [];
         column_type_list = [];
         for col_name in desc:
@@ -82,20 +82,35 @@ def lambda_handler(event, context):
             if(str(zip_file_name).endswith('.zip')):                            #checks to see if file name is a zip
                 print("## UnZipping    folder name :: " + bucket_name + "    key name :: " + key_name)
 
+                size = [2]*9
                 zip_obj = s3_resource.Object(bucket_name = bucket_name, key = key_name)
                 buffer = BytesIO(zip_obj.get()["Body"].read())
                 z = zipfile.ZipFile(buffer)                                 #unzips the file into a temporary space
-                for filename in z.namelist():                               #once zip is open, loops through file contents
+                 
+                foreign_key_level = [0]*9
+                for filename in enumerate(z.namelist()):
+                    if filename[1] in ['Demographic_Data.csv','Assay_Metadata.csv']:
+                        foreign_key_level[filename[0]] = 0
+                    elif filename[1] in ['Assay_Target.csv', 'Biospecimen_Metadata.csv', 'Prior_Test_Results.csv']:
+                        foreign_key_level[filename[0]] = 1
+                    elif filename[1] in ['Equipment_Metadata.csv', 'Reagent_Metadata.csv',  'Aliquot_Metadata.csv','Confirmatory_Test_Results.csv']:
+                        foreign_key_level[filename[0]] = 2
+        
+                full_name_list = z.namelist()
+
+                sort_idx = sorted(range(len(foreign_key_level)), key=lambda k: foreign_key_level[k])
+                sort_idx = [int(l) for l in sort_idx]
+                full_name_list =  [full_name_list[l] for l in sort_idx]
+                
+                for filename in full_name_list:                               #once zip is open, loops through file contents
                     file_info = z.getinfo(filename)
-                    print("## filename :: " + filename)
                     empty_count = 0
+                    dub_counts = 0
                     if(str(filename).endswith('.zip')):
                         print('## zip file does not need to be coppied over, not moving')    
                     else:
                         try:                                                #writes the unziped contents into a new bucket for storage
-                        #    response = s3_resource.meta.client.upload_fileobj(z.open(filename),Bucket = outputput_bucket, Key = filename)
-                        #    bucket = s3_resource.Bucket(outputput_bucket)
-                        
+                            validation_status = 'FILE_VALIDATION_SUCCESS'
                             new_key = CBC_submission_name+'/'+ CBC_submission_date+'/'+filename
                             response = s3_resource.meta.client.upload_fileobj(z.open(filename),Bucket = folder_name, Key = new_key)
                             bucket = s3_resource.Bucket(folder_name)
@@ -106,64 +121,70 @@ def lambda_handler(event, context):
                             try:
                                 lines = response['Body'].read().split(b'\r\n')                  #split on return, newline, and space character
                             except:
-                                lines = response['Body'].read().split(b'\.r\.n')    
-
+                                lines = response['Body'].read().split(b'\.r\.n')
+############################################################################################################################
+                            
                             for row in range(len(lines)):
                                 if row == 0: 
-                                    header_row = lines[row].decode('utf-8')
-                                    header_row = list(header_row.split(","))
+                                    header_row = lines[row].decode('utf-8');        
+                                    header_row = list(header_row.split(","));            
                                     continue
                                 elif row > 0:        #row = 0 is the column header row
-                                    current_row = lines[row].decode('utf-8')
+                                    current_row = lines[row].decode('utf-8');      
                                     current_row = list(current_row.split(","))
 
                                 if len(current_row) <= 1:               #if list is empty then do not use
-                                    empty_count = empty_count + 1
+                                    empty_count = empty_count + 1;                
                                     continue
                                 if(len(set(current_row))==1):
-                                    empty_count = empty_count + 1
+                                    empty_count = empty_count + 1;                 
                                     continue
-
-                                if filename.lower() == "aliquot_metadata.csv":
-                                    import_data_into_table(pre_valid_db,"Aliquot_Table",current_row,header_row,sql_connect,CBC_submission_name)
-                                    import_data_into_table(pre_valid_db,"Aliquot_Tube",current_row,header_row,sql_connect,CBC_submission_name)
-                                elif filename.lower() == "assay_metadata.csv":
-                                    import_data_into_table(pre_valid_db,"Assay_Metadata",current_row,header_row,sql_connect,CBC_submission_name)
+                            
+                                if filename.lower() == "demographic_data.csv":
+                                    dub_counts = dub_counts + import_data_into_table (row,filename,pre_valid_db,"Demographic_Data",current_row,header_row,sql_connect,conn,CBC_submission_name)
+                                    import_data_into_table (row,filename,pre_valid_db,"Comorbidity",current_row,header_row,sql_connect,conn,CBC_submission_name)
+                                    import_data_into_table (row,filename,pre_valid_db,"Prior_Covid_Outcome",current_row,header_row,sql_connect,conn,CBC_submission_name)
+                                    import_data_into_table (row,filename,pre_valid_db,"Submission_MetaData",current_row,header_row,sql_connect,conn,CBC_submission_name,CBC_submission_date)
+                                elif filename.lower() == "assay_metadata.csv":         
+                                    dub_counts = dub_counts + import_data_into_table(row,filename,pre_valid_db,"Assay_Metadata",current_row,header_row,sql_connect,conn,CBC_submission_name)
                                 elif filename.lower() == "assay_target.csv":
-                                    import_data_into_table(pre_valid_db,"Assay_Target",current_row,header_row,sql_connect,CBC_submission_name)
+                                    dub_counts = dub_counts + import_data_into_table(row,filename,pre_valid_db,"Assay_Target",current_row,header_row,sql_connect,conn,CBC_submission_name)
                                 elif filename.lower() == "biospecimen_metadata.csv":
-                                    import_data_into_table (pre_valid_db,"Biospecimen",current_row,header_row,sql_connect,CBC_submission_name)
-                                    import_data_into_table (pre_valid_db,"Collection_Tube",current_row,header_row,sql_connect,CBC_submission_name)
-                                elif filename.lower() == "confirmatory_test_results.csv":
-                                    import_data_into_table (pre_valid_db,"Confirmatory_Test_Result",current_row,header_row,sql_connect,CBC_submission_name)
-                                elif filename.lower() == "demographic_data.csv":
-                                    import_data_into_table (pre_valid_db,"Demographic_Data",current_row,header_row,sql_connect,CBC_submission_name)
-                                    import_data_into_table (pre_valid_db,"Comorbidity",current_row,header_row,sql_connect,CBC_submission_name)
-                                    import_data_into_table (pre_valid_db,"Prior_Covid_Outcome",current_row,header_row,sql_connect,CBC_submission_name)
-                                    import_data_into_table (pre_valid_db,"Submission_MetaData",current_row,header_row,sql_connect,CBC_submission_name,CBC_submission_date)
-                                elif filename.lower() == "equipment_metadata.csv":
-                                    import_data_into_table (pre_valid_db,"Equipment",current_row,header_row,sql_connect,CBC_submission_name)
+                                    dub_counts = dub_counts + import_data_into_table (row,filename,pre_valid_db,"Biospecimen",current_row,header_row,sql_connect,conn,CBC_submission_name)
+                                    import_data_into_table (row,filename,pre_valid_db,"Collection_Tube",current_row,header_row,sql_connect,conn,CBC_submission_name)
                                 elif filename.lower() == "prior_test_results.csv":
-                                    import_data_into_table (pre_valid_db,"Prior_Test_Result",current_row,header_row,sql_connect,CBC_submission_name)
+                                    dub_counts = dub_counts + import_data_into_table (row,filename,pre_valid_db,"Prior_Test_Result",current_row,header_row,sql_connect,conn,CBC_submission_name)
+                                elif filename.lower() == "aliquot_metadata.csv":
+                                    dub_counts = dub_counts + import_data_into_table(row,filename,pre_valid_db,"Aliquot",current_row,header_row,sql_connect,conn,CBC_submission_name)
+                                    import_data_into_table(row,filename,pre_valid_db,"Aliquot_Tube",current_row,header_row,sql_connect,conn,CBC_submission_name)
+                                elif filename.lower() == "equipment_metadata.csv":
+                                    dub_counts = dub_counts + import_data_into_table (row,filename,pre_valid_db,"Equipment",current_row,header_row,sql_connect,conn,CBC_submission_name)
+                                elif filename.lower() == "confirmatory_test_results.csv":
+                                    dub_counts = dub_counts + import_data_into_table (row,filename,pre_valid_db,"Confirmatory_Test_Result",current_row,header_row,sql_connect,conn,CBC_submission_name)
                                 elif filename.lower() == "reagent_metadata.csv":
-                                    import_data_into_table (pre_valid_db,"Reagent",current_row,header_row,sql_connect,CBC_submission_name)
-#                                elif filename.lower() == "shipping-manifest.csv":
-#                                    import_data_into_table (pre_valid_db,"Prior_Test_Result",current_row,header_row,sql_connect,CBC_submission_name)
+                                    dub_counts = dub_counts + import_data_into_table (row,filename,pre_valid_db,"Reagent",current_row,header_row,sql_connect,conn,CBC_submission_name)
                                 else:
-                                    print("## file name is not recongized ##")
+                                    print(filename + "IS NOT an expected file and will not be written to database")
+                                    validation_status = 'FILE_VALIDATION_Failure'
+                            print("## there were " + str(row - empty_count) + " rows found with " + str(dub_counts) + " dupliactes found :: " + str(row - empty_count - dub_counts) + " records written to the table")
+############################################################################################################################
                         except Exception as error_msg:
+                            validation_status = 'FILE_VALIDATION_Failure'
                             print(error_msg)
                     if filename.lower() == "biospecimen_metadata.csv":
-                        query_auto = ("update " + pre_valid_db + ".`Biospecimen`"
+                        query_auto = ("update `" + pre_valid_db + "`.`Biospecimen`"
                         "set Storage_Time_at_2_8 = TIME_TO_SEC(TIMEDIFF(Storage_End_Time_at_2_8 , Storage_Start_Time_at_2_8))/3600;")
                         processing_table = sql_connect.execute(query_auto) 
  ############################################################################################################################33
  ## after contents have been written to mysql, write name of file to file-processing table to show it was done
-                    output_file_name = 's3://' + folder_name + '/' + new_key 
+                    validation_file_location = 's3://' + folder_name + '/' + new_key 
+                    validation_result_location = 'validation_result_location'
+                    validation_notification_arn = 'validation_notification_arn'
                   
-                    query_auto = ("INSERT INTO " + file_dbname + ".`table_file_validator` "
-                    "(orig_file_id, validation_file_location,validation_status,validation_result_location, validation_date,)"
-                    "VALUE ('" + org_file_id ',' + output_file_name  + ',Unzipped_Success' + ',Result_location_location' + "',CONVERT_TZ(CURRENT_TIMESTAMP(), '+00:00', '-05:00'))")
+                    query_auto = ("INSERT INTO `" + file_dbname + "`.`table_file_validator` "
+                    "          (orig_file_id,   validation_file_location,         validation_status, validation_notification_arn,   validation_result_location,            validation_date)"
+                    "VALUE ('" + str(org_file_id) + "','" + validation_file_location  + "','" + validation_status +"','" + validation_notification_arn +"','" + validation_result_location + "'," + "CONVERT_TZ(CURRENT_TIMESTAMP(), '+00:00', '-05:00'))")
+                    
                     processing_table = sql_connect.execute(query_auto)      #mysql command that will update the file-processor table 
                     
                     if processing_table > 0:
@@ -173,7 +194,7 @@ def lambda_handler(event, context):
  ############################################################################################################################33
  ## after all files have been processed, update file remover to indicate it has been done
                
-            table_sql_str = ("UPDATE " + file_dbname + ".table_file_remover "
+            table_sql_str = ("UPDATE `" + file_dbname + "`.table_file_remover "
             "Set file_status = 'FILE_Processed'"
             "Where file_status = 'COPY_SUCCESSFUL' and file_location = '" + full_bucket_name + "'")
             
@@ -185,15 +206,52 @@ def lambda_handler(event, context):
     conn.commit()
     conn.close()
 
-def import_data_into_table (file_dbname,table_name,current_row,header_row,sql_connect,CBC_submission_name,CBC_submission_time = "None_Provided"):
+def import_data_into_table (row_idex,filename,valid_dbname,table_name,current_row,header_row,sql_connect,conn,CBC_submission_name,CBC_submission_time = "None_Provided"):
+    if row_idex == 1:
+        print("## writting " + filename + " into the `" + valid_dbname + "`.`" + table_name + "` table")
 
-    sql_connect.execute("select * from " + file_dbname + ".`" + table_name + "`")
+    query_str = ("show index from `" + valid_dbname + "`.`" + table_name + "` where Key_name = 'PRIMARY';")
+    query_res = sql_connect.execute(query_str)
+    rows = sql_connect.fetchall()
+    dup_counts = 0;
+
+    if query_res > 0:
+        string_2 ="where "
+        if query_res == 1:      #table has 1 primary key
+            if table_name == "Submission_MetaData":             #primary key does not exist in the file
+                Submission_ID = 1;
+            else:
+                curr_prim_key = current_row[header_row.index(rows[0][4])]
+                string_2 = string_2 + " `" + rows[0][4] + "` = '" + curr_prim_key + "'"
+        elif query_res == 2:      #table has 2 primary keys
+            curr_prim_key_1 = current_row[header_row.index(rows[0][4])]
+            curr_prim_key_2 = current_row[header_row.index(rows[1][4])]
+            string_2 = string_2 + " `" + rows[0][4] + "` = '" + curr_prim_key_1 + "'"
+            string_2 = string_2 + "and `" + rows[1][4] + "` = '" + curr_prim_key_2 + "'"
+        elif query_res == 3:      #table has 3 primary keys
+            curr_prim_key_1 = current_row[header_row.index(rows[0][4])]
+            curr_prim_key_2 = current_row[header_row.index(rows[1][4])]
+            curr_prim_key_3 = current_row[header_row.index(rows[2][4])]
+            string_2 = string_2 + " `" + rows[0][4] + "` = '" + curr_prim_key_1 + "'"
+            string_2 = string_2 + "and `" + rows[1][4] + "` = '" + curr_prim_key_2 + "'"
+            string_2 = string_2 + "and `" + rows[2][4] + "` = '" + curr_prim_key_3 + "'"
+        
+        if table_name != "Submission_MetaData":             #primary key does not exist in the file
+            query_str = ("select * from `" + valid_dbname + "`.`" + table_name + "` " + string_2)
+            query_res = sql_connect.execute(query_str)
+            if query_res > 0:
+                dup_counts =  1;
+                return dup_counts
+
+    query_str = "select * from `" + valid_dbname + "`.`" + table_name + "`"
+    query_res = sql_connect.execute(query_str)
     desc = sql_connect.description
 
     column_names_list = [];         column_type_list = [];          
     for col_name in desc:
-        column_names_list.append(col_name[0]);        column_type_list.append(FieldType.get_info(col_name[1]))
-        
+        column_names_list.append(col_name[0]);        
+        column_type_list.append(FieldType.get_info(col_name[1]))
+
     res_cols = [];          res_head = [];
     
     for val in enumerate(column_names_list): 
@@ -206,10 +264,14 @@ def import_data_into_table (file_dbname,table_name,current_row,header_row,sql_co
             match_idx = column_names_list.index(val[1])
             res_head.append(match_idx)       
 
-    string_1 =  "INSERT INTO " + file_dbname + ".`" + table_name + "`("
+    string_1 =  "INSERT INTO `" + valid_dbname + "`.`" + table_name + "`("
     string_2 =  "VALUE ("
     for i in res_cols:
-        string_1 = string_1 + header_row[i] + ","
+        if header_row[i] == "Submission_ID":
+            print(string_1)
+            string_1 = string_1 + " "
+        else:
+            string_1 = string_1 + header_row[i] + ","
     string_1 = string_1[:-1] + ")"
 
     res_head.sort()
@@ -246,5 +308,10 @@ def import_data_into_table (file_dbname,table_name,current_row,header_row,sql_co
         string_2 = string_2[:-1] + ",STR_TO_DATE('" +  CBC_submission_time + "','%H,%i,%S,%m,%d,%Y'))"
  
     query_auto = string_1 + string_2
-    
+
     processing_table = sql_connect.execute(query_auto)
+    if processing_table == 0:
+        print("## error in submission string")
+    else:
+        conn.commit()
+    return dup_counts
