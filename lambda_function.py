@@ -6,6 +6,14 @@ from mysql.connector import FieldType   #get the mysql field type in case format
 import re                       #used to format strings for mysql import
 import datetime                 #not necessary in final version
 import dateutil.tz              #not necessary in final version
+import os
+from dateutil.parser import parse
+import math
+from seronetdBUtilities import *
+from seronetSnsMessagePublisher import *
+import datetime
+import dateutil.tz
+
 
 def lambda_handler(event, context):
     s3_client = boto3.client("s3")
@@ -87,7 +95,9 @@ def lambda_handler(event, context):
                 buffer = BytesIO(zip_obj.get()["Body"].read())
                 z = zipfile.ZipFile(buffer)                                 #unzips the file into a temporary space
                  
-                foreign_key_level = [0]*9
+                full_name_list = z.namelist()
+                foreign_key_level = [0]*len(full_name_list)
+                
                 for filename in enumerate(z.namelist()):
                     if filename[1] in ['Demographic_Data.csv','Assay_Metadata.csv']:
                         foreign_key_level[filename[0]] = 0
@@ -95,12 +105,13 @@ def lambda_handler(event, context):
                         foreign_key_level[filename[0]] = 1
                     elif filename[1] in ['Equipment_Metadata.csv', 'Reagent_Metadata.csv',  'Aliquot_Metadata.csv','Confirmatory_Test_Results.csv']:
                         foreign_key_level[filename[0]] = 2
-        
-                full_name_list = z.namelist()
-
+         
                 sort_idx = sorted(range(len(foreign_key_level)), key=lambda k: foreign_key_level[k])
                 sort_idx = [int(l) for l in sort_idx]
                 full_name_list =  [full_name_list[l] for l in sort_idx]
+                
+                validation_status_list=[]
+                validation_file_location_list=[]
                 
                 for filename in full_name_list:                               #once zip is open, loops through file contents
                     file_info = z.getinfo(filename)
@@ -112,6 +123,7 @@ def lambda_handler(event, context):
                         try:                                                #writes the unziped contents into a new bucket for storage
                             validation_status = 'FILE_VALIDATION_SUCCESS'
                             new_key = CBC_submission_name+'/'+ CBC_submission_date+'/'+filename
+                            #print("##unziped file location :: " + folder_name + "/" + new_key)
                             response = s3_resource.meta.client.upload_fileobj(z.open(filename),Bucket = folder_name, Key = new_key)
                             bucket = s3_resource.Bucket(folder_name)
                         
@@ -164,8 +176,11 @@ def lambda_handler(event, context):
                                 elif filename.lower() == "reagent_metadata.csv":
                                     dub_counts = dub_counts + import_data_into_table (row,filename,pre_valid_db,"Reagent",current_row,header_row,sql_connect,conn,CBC_submission_name)
                                 else:
-                                    print(filename + "IS NOT an expected file and will not be written to database")
+                                    print(filename + " IS NOT an expected file and will not be written to database")
                                     validation_status = 'FILE_VALIDATION_Failure'
+                            if(row - empty_count) == 0:
+                                print(file_name + " is empty and not a valid file")
+                                validation_status = 'FILE_VALIDATION_Failure'
                             print("## there were " + str(row - empty_count) + " rows found with " + str(dub_counts) + " dupliactes found :: " + str(row - empty_count - dub_counts) + " records written to the table")
 ############################################################################################################################
                         except Exception as error_msg:
@@ -186,6 +201,9 @@ def lambda_handler(event, context):
                     "VALUE ('" + str(org_file_id) + "','" + validation_file_location  + "','" + validation_status +"','" + validation_notification_arn +"','" + validation_result_location + "'," + "CONVERT_TZ(CURRENT_TIMESTAMP(), '+00:00', '-05:00'))")
                     
                     processing_table = sql_connect.execute(query_auto)      #mysql command that will update the file-processor table 
+                    validation_status_list.append(validation_status)# record each validation status
+                    validation_file_location_list.append(validation_file_location)# record each validation file location 
+
                     
                     if processing_table > 0:
                         print("###    " + filename + " has been processed, there were  " + str(empty_count) + "  blank lines found in the file")
@@ -199,6 +217,24 @@ def lambda_handler(event, context):
             "Where file_status = 'COPY_SUCCESSFUL' and file_location = '" + full_bucket_name + "'")
             
             processing_table = sql_connect.execute(table_sql_str)           #mysql command that changes the file-action flag so file wont be used again
+            
+            ######publish message to sns topic
+            file_submitted_by="NULL"
+            job_table_name='table_file_remover'
+            #get the prefix from the database
+            exe="SELECT * FROM "+job_table_name+" WHERE file_id="+str(org_file_id)
+            sql_connect.execute(exe)
+            sqlresult = sql_connect.fetchone()
+            file_submitted_by="'"+sqlresult[9]+"'"
+            # getting the validation time stamp
+            eastern = dateutil.tz.gettz('US/Eastern')
+            timestampDB=datetime.datetime.now(tz=eastern).strftime('%Y-%m-%d %H:%M:%S')
+            print(file_submitted_by)
+            result={'org_file_id':str(org_file_id),'file_status':'FILE_Processed','validation_file_location_list':validation_file_location_list,'validation_status_list':validation_status_list,'full_name_list':full_name_list,'validation_date':timestampDB,'file_submitted_by':file_submitted_by,'previous_function':"prevalidator"}
+            TopicArn_Success=ssm.get_parameter(Name="TopicArn_Success", WithDecryption=True).get("Parameter").get("Value")
+            TopicArn_Failure = ssm.get_parameter(Name="TopicArn_Failure", WithDecryption=True).get("Parameter").get("Value")
+            response=sns_publisher(result,TopicArn_Success,TopicArn_Failure)
+            
 ####################################################################################################################    
     print('## All Files have been checked, Closing the connections ##')
     
