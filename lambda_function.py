@@ -229,8 +229,9 @@ def lambda_handler(event, context):
             # getting the validation time stamp
             eastern = dateutil.tz.gettz('US/Eastern')
             timestampDB=datetime.datetime.now(tz=eastern).strftime('%Y-%m-%d %H:%M:%S')
+            org_file_name=zip_file_name
             print(file_submitted_by)
-            result={'org_file_id':str(org_file_id),'file_status':'FILE_Processed','validation_file_location_list':validation_file_location_list,'validation_status_list':validation_status_list,'full_name_list':full_name_list,'validation_date':timestampDB,'file_submitted_by':file_submitted_by,'previous_function':"prevalidator"}
+            result={'org_file_id':str(org_file_id),'file_status':'FILE_Processed','validation_file_location_list':validation_file_location_list,'validation_status_list':validation_status_list,'full_name_list':full_name_list,'validation_date':timestampDB,'file_submitted_by':file_submitted_by,'previous_function':"prevalidator",'org_file_name':org_file_name}
             TopicArn_Success=ssm.get_parameter(Name="TopicArn_Success", WithDecryption=True).get("Parameter").get("Value")
             TopicArn_Failure = ssm.get_parameter(Name="TopicArn_Failure", WithDecryption=True).get("Parameter").get("Value")
             response=sns_publisher(result,TopicArn_Success,TopicArn_Failure)
