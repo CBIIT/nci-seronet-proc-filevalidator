@@ -1,7 +1,6 @@
 import boto3                    #used to connect to aws servies
 from io import BytesIO          #used to convert file into bytes in order to unzip
 import zipfile                  #used to unzip the incomming file
-import pymysql                  #used to connect to the mysql database
 from mysql.connector import FieldType   #get the mysql field type in case formating is necessary
 import re                       #used to format strings for mysql import
 import datetime                 #not necessary in final version
@@ -26,21 +25,25 @@ def lambda_handler(event, context):
     user_password =ssm.get_parameter(Name="lambda_db_password", WithDecryption=True).get("Parameter").get("Value")
     file_dbname = ssm.get_parameter(Name="jobs_db_name", WithDecryption=True).get("Parameter").get("Value")
     pre_valid_db = ssm.get_parameter(Name="Prevalidated_DB", WithDecryption=True).get("Parameter").get("Value")
-
+    
     try:
-        conn = pymysql.connect(host = host_client, user=user_name, password=user_password, db=file_dbname, connect_timeout=5)
+        #conn = mysql.connect(host = host_client, user=user_name, password=user_password, db=file_dbname, connect_timeout=5)
+        conn = mysql.connector.connect(user=user_name, host=host_client, password=user_password, database=file_dbname)
         print("SUCCESS: Connection to RDS mysql instance succeeded for file remover tables")
-    except:
-        print("ERROR: Unexpected error: Could not connect to MySql instance.")
+    except mysql.connector.Error as err:
+        print(err)
         return{} 
 
     sql_connect = conn.cursor()
 
     table_sql_str = ("SELECT * FROM `" + file_dbname + "`.table_file_remover Where file_status = 'COPY_SUCCESSFUL'")
+    
 
-    processing_table = sql_connect.execute(table_sql_str)            #returns number of rows in the database
+    sql_connect.execute(table_sql_str)            #returns number of rows in the database
+    rows = sql_connect.fetchall()                   #list of all the data
+    processing_table = sql_connect.rowcount
   
-    rows = []
+    
     if processing_table == 0:
         print('## There are no new files to add ##')
         print('## All Files have been checked, Closing the connections ##')
@@ -50,7 +53,7 @@ def lambda_handler(event, context):
         
     elif processing_table > 0:
         print('SQL command was executed sucessfully')
-        rows = sql_connect.fetchall()                   #list of all the data
+        
         desc = sql_connect.description                  #tuple list of column names
         
     
@@ -189,7 +192,8 @@ def lambda_handler(event, context):
                     if filename.lower() == "biospecimen_metadata.csv":
                         query_auto = ("update `" + pre_valid_db + "`.`Biospecimen`"
                         "set Storage_Time_at_2_8 = TIME_TO_SEC(TIMEDIFF(Storage_End_Time_at_2_8 , Storage_Start_Time_at_2_8))/3600;")
-                        processing_table = sql_connect.execute(query_auto) 
+                        sql_connect.execute(query_auto) 
+                        processing_table = sql_connect.rowcount
  ############################################################################################################################33
  ## after contents have been written to mysql, write name of file to file-processing table to show it was done
                     validation_file_location = 's3://' + folder_name + '/' + new_key 
@@ -200,7 +204,8 @@ def lambda_handler(event, context):
                     "          (orig_file_id,   validation_file_location,         validation_status, validation_notification_arn,   validation_result_location,            validation_date)"
                     "VALUE ('" + str(org_file_id) + "','" + validation_file_location  + "','" + validation_status +"','" + validation_notification_arn +"','" + validation_result_location + "'," + "CONVERT_TZ(CURRENT_TIMESTAMP(), '+00:00', '-05:00'))")
                     
-                    processing_table = sql_connect.execute(query_auto)      #mysql command that will update the file-processor table 
+                    sql_connect.execute(query_auto)      #mysql command that will update the file-processor table
+                    processing_table = sql_connect.rowcount
                     validation_status_list.append(validation_status)# record each validation status
                     validation_file_location_list.append(validation_file_location)# record each validation file location 
 
@@ -216,7 +221,8 @@ def lambda_handler(event, context):
             "Set file_status = 'FILE_Processed'"
             "Where file_status = 'COPY_SUCCESSFUL' and file_location = '" + full_bucket_name + "'")
             
-            processing_table = sql_connect.execute(table_sql_str)           #mysql command that changes the file-action flag so file wont be used again
+            sql_connect.execute(table_sql_str)           #mysql command that changes the file-action flag so file wont be used again
+            processing_table=sql_connect.rowcount
             
             ######publish message to sns topic
             file_submitted_by="NULL"
@@ -230,7 +236,8 @@ def lambda_handler(event, context):
             eastern = dateutil.tz.gettz('US/Eastern')
             timestampDB=datetime.datetime.now(tz=eastern).strftime('%Y-%m-%d %H:%M:%S')
             org_file_name=zip_file_name
-            print(file_submitted_by)
+            
+           
             result={'org_file_id':str(org_file_id),'file_status':'FILE_Processed','validation_file_location_list':validation_file_location_list,'validation_status_list':validation_status_list,'full_name_list':full_name_list,'validation_date':timestampDB,'file_submitted_by':file_submitted_by,'previous_function':"prevalidator",'org_file_name':org_file_name}
             TopicArn_Success=ssm.get_parameter(Name="TopicArn_Success", WithDecryption=True).get("Parameter").get("Value")
             TopicArn_Failure = ssm.get_parameter(Name="TopicArn_Failure", WithDecryption=True).get("Parameter").get("Value")
@@ -248,8 +255,10 @@ def import_data_into_table (row_idex,filename,valid_dbname,table_name,current_ro
         print("## writting " + filename + " into the `" + valid_dbname + "`.`" + table_name + "` table")
 
     query_str = ("show index from `" + valid_dbname + "`.`" + table_name + "` where Key_name = 'PRIMARY';")
-    query_res = sql_connect.execute(query_str)
+    sql_connect.execute(query_str)
+    
     rows = sql_connect.fetchall()
+    query_res =sql_connect.rowcount
     dup_counts = 0;
 
     if query_res > 0:
@@ -275,14 +284,20 @@ def import_data_into_table (row_idex,filename,valid_dbname,table_name,current_ro
         
         if table_name != "Submission_MetaData":             #primary key does not exist in the file
             query_str = ("select * from `" + valid_dbname + "`.`" + table_name + "` " + string_2)
-            query_res = sql_connect.execute(query_str)
+            sql_connect.execute(query_str)
+            a=sql_connect.fetchall()
+            query_res =sql_connect.rowcount
             if query_res > 0:
                 dup_counts =  1;
                 return dup_counts
 
     query_str = "select * from `" + valid_dbname + "`.`" + table_name + "`"
-    query_res = sql_connect.execute(query_str)
+    
+    sql_connect.execute(query_str)
     desc = sql_connect.description
+    a=sql_connect.fetchall()
+    query_res =sql_connect.rowcount
+    
 
     column_names_list = [];         column_type_list = [];          
     for col_name in desc:
@@ -345,8 +360,10 @@ def import_data_into_table (row_idex,filename,valid_dbname,table_name,current_ro
         string_2 = string_2[:-1] + ",STR_TO_DATE('" +  CBC_submission_time + "','%H,%i,%S,%m,%d,%Y'))"
  
     query_auto = string_1 + string_2
+    
 
-    processing_table = sql_connect.execute(query_auto)
+    sql_connect.execute(query_auto)
+    processing_table = sql_connect.rowcount
     if processing_table == 0:
         print("## error in submission string")
     else:
