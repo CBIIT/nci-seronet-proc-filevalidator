@@ -18,30 +18,35 @@ def lambda_handler(event, context):
     s3_client = boto3.client("s3")
     s3_resource = boto3.resource("s3")
     ssm = boto3.client("ssm")
-    
- #   outputput_bucket = ssm.get_parameter(Name="Unzipped_dest_bucket", WithDecryption=True).get("Parameter").get("Value")
     host_client = ssm.get_parameter(Name="db_host", WithDecryption=True).get("Parameter").get("Value")
     user_name = ssm.get_parameter(Name="lambda_db_username", WithDecryption=True).get("Parameter").get("Value")
     user_password =ssm.get_parameter(Name="lambda_db_password", WithDecryption=True).get("Parameter").get("Value")
     file_dbname = ssm.get_parameter(Name="jobs_db_name", WithDecryption=True).get("Parameter").get("Value")
     pre_valid_db = ssm.get_parameter(Name="Prevalidated_DB", WithDecryption=True).get("Parameter").get("Value")
-    
+    job_table_name='table_file_remover'
     try:
-        #conn = mysql.connect(host = host_client, user=user_name, password=user_password, db=file_dbname, connect_timeout=5)
         conn = mysql.connector.connect(user=user_name, host=host_client, password=user_password, database=file_dbname)
         print("SUCCESS: Connection to RDS mysql instance succeeded for file remover tables")
     except mysql.connector.Error as err:
         print(err)
         return{} 
-
+    
     sql_connect = conn.cursor()
 
-    table_sql_str = ("SELECT * FROM `" + file_dbname + "`.table_file_remover Where file_status = 'COPY_SUCCESSFUL'")
     
 
-    sql_connect.execute(table_sql_str)            #returns number of rows in the database
-    rows = sql_connect.fetchall()                   #list of all the data
-    processing_table = sql_connect.rowcount
+
+   
+
+    if 'testMode' in event:
+        if event['testMode']=="on":
+            print("testMode on")
+            processing_table=1
+    else:
+        table_sql_str = ("SELECT * FROM `" + file_dbname + "`.table_file_remover Where file_status = 'COPY_SUCCESSFUL'")
+        sql_connect.execute(table_sql_str)            #returns number of rows in the database
+        rows = sql_connect.fetchall()                   #list of all the data
+        processing_table = sql_connect.rowcount
   
     
     if processing_table == 0:
@@ -53,8 +58,22 @@ def lambda_handler(event, context):
         
     elif processing_table > 0:
         print('SQL command was executed sucessfully')
-        
-        desc = sql_connect.description                  #tuple list of column names
+        rows=[]
+
+        if 'testMode' in event:
+            if event['testMode']=="on":
+                length= len(event['s3']) 
+                for i in range(0,length):
+                    contents_list = event['s3'][i].split("/")
+                    
+                    temporary_filename=contents_list[3]
+                    temporary_filename_contents=temporary_filename.split(".")
+                    temporary_filetype=temporary_filename_contents[len(temporary_filename_contents)-1]
+                    rows.append((12345, temporary_filename, event['s3'][i], "testing", "testing", "COPY_SUCCESSFUL", "testing", temporary_filetype, "submit", contents_list[1], "testing"))
+                    
+                    desc=(('file_id', 3, None, 11, 11, 0, False), ('file_name', 253, None, 1020, 1020, 0, True), ('file_location', 253, None, 1020, 1020, 0, True), ('file_added_on', 12, None, 19, 19, 0, True), ('file_last_processed_on', 12, None, 19, 19, 0, True), ('file_status', 253, None, 180, 180, 0, True), ('file_origin', 253, None, 180, 180, 0, True), ('file_type', 253, None, 180, 180, 0, True), ('file_action', 253, None, 180, 180, 0, True), ('file_submitted_by', 253, None, 180, 180, 0, True), ('updated_by', 253, None, 180, 180, 0, True))
+        else:
+            desc = sql_connect.description                  #tuple list of column names
         
     
         column_names_list = [];
@@ -70,9 +89,11 @@ def lambda_handler(event, context):
         for row_data in rows:   
             current_row = list(row_data)                                        #Current row function is interating on
             full_bucket_name = current_row[file_location_index]
+            
             zip_file_name = current_row[file_name_index]
             org_file_id = current_row[file_id_index]
             name_parts_list = full_bucket_name.split("/")
+            
             if len(name_parts_list) == 4:
                 folder_name = name_parts_list[0]
                 CBC_submission_name = name_parts_list[1]
@@ -199,13 +220,18 @@ def lambda_handler(event, context):
                     validation_file_location = 's3://' + folder_name + '/' + new_key 
                     validation_result_location = 'validation_result_location'
                     validation_notification_arn = 'validation_notification_arn'
-                  
-                    query_auto = ("INSERT INTO `" + file_dbname + "`.`table_file_validator` "
-                    "          (orig_file_id,   validation_file_location,         validation_status, validation_notification_arn,   validation_result_location,            validation_date)"
-                    "VALUE ('" + str(org_file_id) + "','" + validation_file_location  + "','" + validation_status +"','" + validation_notification_arn +"','" + validation_result_location + "'," + "CONVERT_TZ(CURRENT_TIMESTAMP(), '+00:00', '-05:00'))")
+                    if 'testMode' in event:
+                        if event['testMode']=="on":
+                            print("Since testMode is on, the file unziping will not record to the database")
+                            processing_table = 1
+                    else:
+                        query_auto = ("INSERT INTO `" + file_dbname + "`.`table_file_validator` "
+                        "          (orig_file_id,   validation_file_location,         validation_status, validation_notification_arn,   validation_result_location,            validation_date)"
+                        "VALUE ('" + str(org_file_id) + "','" + validation_file_location  + "','" + validation_status +"','" + validation_notification_arn +"','" + validation_result_location + "'," + "CONVERT_TZ(CURRENT_TIMESTAMP(), '+00:00', '-05:00'))")
                     
-                    sql_connect.execute(query_auto)      #mysql command that will update the file-processor table
-                    processing_table = sql_connect.rowcount
+                        sql_connect.execute(query_auto)      #mysql command that will update the file-processor table
+                        processing_table = sql_connect.rowcount
+                        
                     validation_status_list.append(validation_status)# record each validation status
                     validation_file_location_list.append(validation_file_location)# record each validation file location 
 
@@ -216,22 +242,26 @@ def lambda_handler(event, context):
                 print(zip_file_name + 'is not a zip file.')
  ############################################################################################################################33
  ## after all files have been processed, update file remover to indicate it has been done
-               
-            table_sql_str = ("UPDATE `" + file_dbname + "`.table_file_remover "
-            "Set file_status = 'FILE_Processed'"
-            "Where file_status = 'COPY_SUCCESSFUL' and file_location = '" + full_bucket_name + "'")
+            if 'testMode' in event:
+                if event['testMode']=="on":
+                   file_submitted_by="'"+row_data[9]+"'"
+            else:   
+                table_sql_str = ("UPDATE `" + file_dbname + "`.table_file_remover "
+                "Set file_status = 'FILE_Processed'"
+                "Where file_status = 'COPY_SUCCESSFUL' and file_location = '" + full_bucket_name + "'")
             
-            sql_connect.execute(table_sql_str)           #mysql command that changes the file-action flag so file wont be used again
-            processing_table=sql_connect.rowcount
+                sql_connect.execute(table_sql_str)           #mysql command that changes the file-action flag so file wont be used again
+                processing_table=sql_connect.rowcount
+                #get the prefix from the database
+                exe="SELECT * FROM "+job_table_name+" WHERE file_id="+str(org_file_id)
+                sql_connect.execute(exe)
+                sqlresult = sql_connect.fetchone()
+                file_submitted_by="'"+sqlresult[9]+"'"
             
             ######publish message to sns topic
             file_submitted_by="NULL"
             job_table_name='table_file_remover'
-            #get the prefix from the database
-            exe="SELECT * FROM "+job_table_name+" WHERE file_id="+str(org_file_id)
-            sql_connect.execute(exe)
-            sqlresult = sql_connect.fetchone()
-            file_submitted_by="'"+sqlresult[9]+"'"
+
             # getting the validation time stamp
             eastern = dateutil.tz.gettz('US/Eastern')
             timestampDB=datetime.datetime.now(tz=eastern).strftime('%Y-%m-%d %H:%M:%S')
