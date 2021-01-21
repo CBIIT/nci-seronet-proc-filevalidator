@@ -262,7 +262,6 @@ def lambda_handler(event, context):
                 file_submitted_by="'"+sqlresult[9]+"'"
             
             ######publish message to sns topic
-            file_submitted_by="NULL"
             job_table_name='table_file_remover'
 
             # getting the validation time stamp
