@@ -23,6 +23,7 @@ def lambda_handler(event, context):
     user_password =ssm.get_parameter(Name="lambda_db_password", WithDecryption=True).get("Parameter").get("Value")
     file_dbname = ssm.get_parameter(Name="jobs_db_name", WithDecryption=True).get("Parameter").get("Value")
     pre_valid_db = ssm.get_parameter(Name="Prevalidated_DB", WithDecryption=True).get("Parameter").get("Value")
+    job_table_name='table_file_remover'
     try:
         conn = mysql.connector.connect(user=user_name, host=host_client, password=user_password, database=file_dbname)
         print("SUCCESS: Connection to RDS mysql instance succeeded for file remover tables")
@@ -46,6 +47,7 @@ def lambda_handler(event, context):
         sql_connect.execute(table_sql_str)            #returns number of rows in the database
         rows = sql_connect.fetchall()                   #list of all the data
         processing_table = sql_connect.rowcount
+        print(processing_table)
   
     
     if processing_table == 0:
@@ -57,16 +59,21 @@ def lambda_handler(event, context):
         
     elif processing_table > 0:
         print('SQL command was executed sucessfully')
+        
 
         if 'testMode' in event:
             if event['testMode']=="on":
-                contents_list = event['s3'].split("/")
-                temporary_filename=contents_list[3]
-                temporary_filename_contents=temporary_filename.split(".")
-                temporary_filetype=temporary_filename_contents[len(temporary_filename_contents)-1]
-                rows=((12345, temporary_filename, event['s3'], "testing", "testing", "COPY_SUCCESSFUL", "testing", temporary_filetype, "submit", contents_list[1], "testing"),)
-                
-                desc=(('file_id', 3, None, 11, 11, 0, False), ('file_name', 253, None, 1020, 1020, 0, True), ('file_location', 253, None, 1020, 1020, 0, True), ('file_added_on', 12, None, 19, 19, 0, True), ('file_last_processed_on', 12, None, 19, 19, 0, True), ('file_status', 253, None, 180, 180, 0, True), ('file_origin', 253, None, 180, 180, 0, True), ('file_type', 253, None, 180, 180, 0, True), ('file_action', 253, None, 180, 180, 0, True), ('file_submitted_by', 253, None, 180, 180, 0, True), ('updated_by', 253, None, 180, 180, 0, True))
+                rows=[]
+                length= len(event['s3']) 
+                for i in range(0,length):
+                    contents_list = event['s3'][i].split("/")
+                    
+                    temporary_filename=contents_list[3]
+                    temporary_filename_contents=temporary_filename.split(".")
+                    temporary_filetype=temporary_filename_contents[len(temporary_filename_contents)-1]
+                    rows.append((12345, temporary_filename, event['s3'][i], "testing", "testing", "COPY_SUCCESSFUL", "testing", temporary_filetype, "submit", contents_list[1], "testing"))
+                    
+                    desc=(('file_id', 3, None, 11, 11, 0, False), ('file_name', 253, None, 1020, 1020, 0, True), ('file_location', 253, None, 1020, 1020, 0, True), ('file_added_on', 12, None, 19, 19, 0, True), ('file_last_processed_on', 12, None, 19, 19, 0, True), ('file_status', 253, None, 180, 180, 0, True), ('file_origin', 253, None, 180, 180, 0, True), ('file_type', 253, None, 180, 180, 0, True), ('file_action', 253, None, 180, 180, 0, True), ('file_submitted_by', 253, None, 180, 180, 0, True), ('updated_by', 253, None, 180, 180, 0, True))
         else:
             desc = sql_connect.description                  #tuple list of column names
         
@@ -81,12 +88,15 @@ def lambda_handler(event, context):
         file_name_index = column_names_list.index('file_name')
         file_location_index = column_names_list.index('file_location')
         
+        
         for row_data in rows:   
             current_row = list(row_data)                                        #Current row function is interating on
             full_bucket_name = current_row[file_location_index]
+            
             zip_file_name = current_row[file_name_index]
             org_file_id = current_row[file_id_index]
             name_parts_list = full_bucket_name.split("/")
+            
             if len(name_parts_list) == 4:
                 folder_name = name_parts_list[0]
                 CBC_submission_name = name_parts_list[1]
